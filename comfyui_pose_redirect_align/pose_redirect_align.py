@@ -153,7 +153,6 @@ def _align_single(
 
     ref_height = max(1, ref_bbox[3] - ref_bbox[1])
     src_height = max(1, src_bbox[3] - src_bbox[1])
-
     scale = float(np.clip(ref_height / float(src_height), min_scale, max_scale))
 
     ref_head = _head_anchor(ref_mask, ref_bbox, head_ratio)
@@ -179,29 +178,29 @@ class PoseRedirectAlignByHead:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "reference_pose": ("IMAGE",),
-                "source_pose": ("IMAGE",),
-                "background_threshold": (
+                "\u53c2\u8003\u59ff\u6001\u56fe": ("IMAGE",),
+                "\u6e90\u59ff\u6001\u56fe": ("IMAGE",),
+                "\u80cc\u666f\u9608\u503c": (
                     "INT",
                     {
                         "default": 18,
                         "min": 1,
                         "max": 255,
                         "step": 1,
-                        "tooltip": "Pixels far enough from the border background are treated as pose foreground.",
+                        "tooltip": "\u4e0e\u8fb9\u754c\u80cc\u666f\u5dee\u5f02\u8db3\u591f\u5927\u7684\u50cf\u7d20\u4f1a\u88ab\u89c6\u4e3a pose \u524d\u666f\u3002",
                     },
                 ),
-                "head_search_ratio": (
+                "\u5934\u90e8\u641c\u7d22\u6bd4\u4f8b": (
                     "FLOAT",
                     {
                         "default": 0.22,
                         "min": 0.05,
                         "max": 0.45,
                         "step": 0.01,
-                        "tooltip": "Top region ratio used to estimate the head anchor point.",
+                        "tooltip": "\u7528\u4e8e\u4f30\u8ba1\u5934\u90e8\u951a\u70b9\u7684\u4e0a\u534a\u90e8\u533a\u57df\u6bd4\u4f8b\u3002",
                     },
                 ),
-                "min_scale": (
+                "\u6700\u5c0f\u7f29\u653e": (
                     "FLOAT",
                     {
                         "default": 0.25,
@@ -210,7 +209,7 @@ class PoseRedirectAlignByHead:
                         "step": 0.01,
                     },
                 ),
-                "max_scale": (
+                "\u6700\u5927\u7f29\u653e": (
                     "FLOAT",
                     {
                         "default": 4.00,
@@ -223,19 +222,24 @@ class PoseRedirectAlignByHead:
         }
 
     RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "INT", "INT")
-    RETURN_NAMES = ("对齐后姿态图", "对齐后遮罩", "缩放倍率", "横向偏移", "纵向偏移")
+    RETURN_NAMES = (
+        "\u5bf9\u9f50\u540e\u59ff\u6001\u56fe",
+        "\u5bf9\u9f50\u540e\u906e\u7f69",
+        "\u7f29\u653e\u500d\u7387",
+        "\u6a2a\u5411\u504f\u79fb",
+        "\u7eb5\u5411\u504f\u79fb",
+    )
     FUNCTION = "align_pose"
-    CATEGORY = "pose/redirect"
+    CATEGORY = "\u59ff\u6001/\u91cd\u5b9a\u5411"
 
-    def align_pose(
-        self,
-        reference_pose: torch.Tensor,
-        source_pose: torch.Tensor,
-        background_threshold: int,
-        head_search_ratio: float,
-        min_scale: float,
-        max_scale: float,
-    ):
+    def align_pose(self, **kwargs):
+        reference_pose = kwargs["\u53c2\u8003\u59ff\u6001\u56fe"]
+        source_pose = kwargs["\u6e90\u59ff\u6001\u56fe"]
+        background_threshold = kwargs["\u80cc\u666f\u9608\u503c"]
+        head_search_ratio = kwargs["\u5934\u90e8\u641c\u7d22\u6bd4\u4f8b"]
+        min_scale = kwargs["\u6700\u5c0f\u7f29\u653e"]
+        max_scale = kwargs["\u6700\u5927\u7f29\u653e"]
+
         ref_batch = reference_pose.shape[0]
         src_batch = source_pose.shape[0]
         batch = max(ref_batch, src_batch)
@@ -273,8 +277,6 @@ class PoseRedirectAlignByHead:
         aligned_batch = torch.cat(aligned_images, dim=0)
         mask_batch = torch.cat(aligned_masks, dim=0)
 
-        # ComfyUI scalar outputs are returned as Python numbers. For batched usage,
-        # the first sample's transform is usually the most practical single-value summary.
         return (
             aligned_batch,
             mask_batch,
@@ -289,5 +291,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PoseRedirectAlignByHead": "姿态重定向对齐",
+    "PoseRedirectAlignByHead": "\u59ff\u6001\u91cd\u5b9a\u5411\u5bf9\u9f50",
 }
