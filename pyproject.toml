@@ -15,5 +15,5 @@ Repository = "https://github.com/playboy-dongan/comfyui-pose-redirect-align"
 "Bug Tracker" = "https://github.com/playboy-dongan/comfyui-pose-redirect-align/issues"
 
 [tool.comfy]
-PublisherId = "TODO_REPLACE_WITH_YOUR_REGISTRY_PUBLISHER_ID"
+PublisherId = "playboy-dongan"
 DisplayName = "姿态重定向对齐"
