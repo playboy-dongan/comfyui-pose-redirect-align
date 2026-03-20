@@ -223,7 +223,7 @@ class PoseRedirectAlignByHead:
         }
 
     RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "INT", "INT")
-    RETURN_NAMES = ("aligned_pose", "aligned_mask", "scale", "offset_x", "offset_y")
+    RETURN_NAMES = ("对齐后姿态图", "对齐后遮罩", "缩放倍率", "横向偏移", "纵向偏移")
     FUNCTION = "align_pose"
     CATEGORY = "pose/redirect"
 
@@ -289,5 +289,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PoseRedirectAlignByHead": "Pose Redirect Align By Head",
+    "PoseRedirectAlignByHead": "姿态重定向对齐",
 }

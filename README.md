@@ -30,7 +30,7 @@ Then restart ComfyUI.
 ## Node Name
 
 ```text
-Pose Redirect Align By Head
+姿态重定向对齐
 ```
 
 Category:
