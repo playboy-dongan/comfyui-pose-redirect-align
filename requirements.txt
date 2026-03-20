@@ -1,0 +1,4 @@
+# Most ComfyUI environments already include these.
+numpy
+opencv-python
+torch
