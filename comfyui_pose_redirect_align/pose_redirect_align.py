@@ -1,4 +1,6 @@
-from typing import Tuple
+import copy
+import math
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -173,6 +175,261 @@ def _align_single(
     return aligned_tensor, mask_tensor, scale, offset_x, offset_y
 
 
+def _ensure_array(points) -> Optional[np.ndarray]:
+    if points is None:
+        return None
+    array = np.asarray(points, dtype=np.float32)
+    if array.ndim != 2 or array.shape[1] < 3:
+        return None
+    return array
+
+
+def _points_to_pixels(points: Optional[np.ndarray], width: float, height: float) -> Optional[np.ndarray]:
+    if points is None:
+        return None
+    pixels = points.copy()
+    pixels[:, 0] *= float(width)
+    pixels[:, 1] *= float(height)
+    return pixels
+
+
+def _points_to_normalized(points: Optional[np.ndarray], width: float, height: float) -> Optional[np.ndarray]:
+    if points is None:
+        return None
+    normalized = points.copy()
+    normalized[:, 0] /= float(width)
+    normalized[:, 1] /= float(height)
+    return normalized.astype(np.float32)
+
+
+def _valid_point(points: Optional[np.ndarray], index: int, conf_threshold: float) -> Optional[np.ndarray]:
+    if points is None or index >= len(points):
+        return None
+    point = points[index]
+    if not np.isfinite(point[0]) or not np.isfinite(point[1]) or not np.isfinite(point[2]):
+        return None
+    if float(point[2]) < conf_threshold:
+        return None
+    return point[:2].astype(np.float32)
+
+
+def _mean_of_indices(points: Optional[np.ndarray], indices: List[int], conf_threshold: float) -> Optional[np.ndarray]:
+    valid = [_valid_point(points, index, conf_threshold) for index in indices]
+    valid = [point for point in valid if point is not None]
+    if not valid:
+        return None
+    return np.mean(np.stack(valid, axis=0), axis=0).astype(np.float32)
+
+
+def _build_transform_from_body(
+    ref_body: Optional[np.ndarray],
+    src_body: Optional[np.ndarray],
+    conf_threshold: float,
+) -> Tuple[float, float, np.ndarray, str, int]:
+    # COCO/OpenPose-style stable anchors: shoulders and hips.
+    ref_shoulder_center = _mean_of_indices(ref_body, [2, 5], conf_threshold)
+    src_shoulder_center = _mean_of_indices(src_body, [2, 5], conf_threshold)
+    ref_hip_center = _mean_of_indices(ref_body, [8, 11], conf_threshold)
+    src_hip_center = _mean_of_indices(src_body, [8, 11], conf_threshold)
+
+    if (
+        ref_shoulder_center is not None
+        and src_shoulder_center is not None
+        and ref_hip_center is not None
+        and src_hip_center is not None
+    ):
+        ref_vector = ref_hip_center - ref_shoulder_center
+        src_vector = src_hip_center - src_shoulder_center
+        ref_len = float(np.linalg.norm(ref_vector))
+        src_len = float(np.linalg.norm(src_vector))
+        if ref_len > 1e-6 and src_len > 1e-6:
+            scale = ref_len / src_len
+            rotation = math.atan2(float(ref_vector[1]), float(ref_vector[0])) - math.atan2(
+                float(src_vector[1]), float(src_vector[0])
+            )
+            anchor = src_shoulder_center
+            translation = ref_shoulder_center - scale * _rotate_point(anchor, rotation)
+            return scale, rotation, translation.astype(np.float32), "躯干", 4
+
+    ref_shoulder_left = _valid_point(ref_body, 2, conf_threshold)
+    ref_shoulder_right = _valid_point(ref_body, 5, conf_threshold)
+    src_shoulder_left = _valid_point(src_body, 2, conf_threshold)
+    src_shoulder_right = _valid_point(src_body, 5, conf_threshold)
+    if (
+        ref_shoulder_left is not None
+        and ref_shoulder_right is not None
+        and src_shoulder_left is not None
+        and src_shoulder_right is not None
+    ):
+        ref_vector = ref_shoulder_right - ref_shoulder_left
+        src_vector = src_shoulder_right - src_shoulder_left
+        ref_len = float(np.linalg.norm(ref_vector))
+        src_len = float(np.linalg.norm(src_vector))
+        if ref_len > 1e-6 and src_len > 1e-6:
+            scale = ref_len / src_len
+            rotation = math.atan2(float(ref_vector[1]), float(ref_vector[0])) - math.atan2(
+                float(src_vector[1]), float(src_vector[0])
+            )
+            src_center = (src_shoulder_left + src_shoulder_right) * 0.5
+            ref_center = (ref_shoulder_left + ref_shoulder_right) * 0.5
+            translation = ref_center - scale * _rotate_point(src_center, rotation)
+            return scale, rotation, translation.astype(np.float32), "肩线", 4
+
+    ref_head = _mean_of_indices(ref_body, [0, 1, 14, 15, 16, 17], conf_threshold)
+    src_head = _mean_of_indices(src_body, [0, 1, 14, 15, 16, 17], conf_threshold)
+    if ref_head is not None and src_head is not None:
+        return 1.0, 0.0, (ref_head - src_head).astype(np.float32), "头部", 2
+
+    return 1.0, 0.0, np.zeros(2, dtype=np.float32), "无有效锚点", 0
+
+
+def _rotate_point(point: np.ndarray, rotation: float) -> np.ndarray:
+    cos_v = math.cos(rotation)
+    sin_v = math.sin(rotation)
+    x = float(point[0])
+    y = float(point[1])
+    return np.array([x * cos_v - y * sin_v, x * sin_v + y * cos_v], dtype=np.float32)
+
+
+def _apply_similarity(points: Optional[np.ndarray], scale: float, rotation: float, translation: np.ndarray) -> Optional[np.ndarray]:
+    if points is None:
+        return None
+    transformed = points.copy()
+    cos_v = math.cos(rotation)
+    sin_v = math.sin(rotation)
+
+    xy = transformed[:, :2].astype(np.float32)
+    rotated = np.empty_like(xy)
+    rotated[:, 0] = xy[:, 0] * cos_v - xy[:, 1] * sin_v
+    rotated[:, 1] = xy[:, 0] * sin_v + xy[:, 1] * cos_v
+    transformed[:, :2] = rotated * scale + translation.reshape(1, 2)
+    return transformed
+
+
+def _extract_pose_meta_dicts(pose_payload) -> List[Dict]:
+    if not isinstance(pose_payload, dict):
+        raise ValueError("姿态数据必须是字典结构。")
+
+    meta_dicts = pose_payload.get("pose_metas_original")
+    if not isinstance(meta_dicts, list) or not meta_dicts:
+        raise ValueError("姿态数据中缺少 pose_metas_original 列表。")
+    if not all(isinstance(item, dict) for item in meta_dicts):
+        raise ValueError("pose_metas_original 中的元素必须是字典。")
+    return meta_dicts
+
+
+def _patch_pose_meta_objects(payload: dict, transformed_meta_dicts: List[Dict]) -> None:
+    objects = payload.get("pose_metas")
+    if not isinstance(objects, list):
+        return
+
+    for index, meta in enumerate(transformed_meta_dicts):
+        if index >= len(objects):
+            break
+        obj = objects[index]
+        if obj is None:
+            continue
+        for key in ("width", "height", "keypoints_body", "keypoints_left_hand", "keypoints_right_hand", "keypoints_face"):
+            if hasattr(obj, key) and key in meta:
+                setattr(obj, key, meta[key])
+
+
+def _retarget_pose_meta_dict(
+    reference_meta: Dict,
+    source_meta: Dict,
+    conf_threshold: float,
+) -> Tuple[Dict, Dict]:
+    ref_width = float(reference_meta["width"])
+    ref_height = float(reference_meta["height"])
+    src_width = float(source_meta["width"])
+    src_height = float(source_meta["height"])
+
+    ref_body = _points_to_pixels(_ensure_array(reference_meta.get("keypoints_body")), ref_width, ref_height)
+    src_body = _points_to_pixels(_ensure_array(source_meta.get("keypoints_body")), src_width, src_height)
+
+    scale, rotation, translation, mode, used_points = _build_transform_from_body(ref_body, src_body, conf_threshold)
+
+    transformed = copy.deepcopy(source_meta)
+    transformed["width"] = int(round(ref_width))
+    transformed["height"] = int(round(ref_height))
+
+    for key in ("keypoints_body", "keypoints_left_hand", "keypoints_right_hand", "keypoints_face"):
+        points = _ensure_array(source_meta.get(key))
+        points_px = _points_to_pixels(points, src_width, src_height)
+        transformed_px = _apply_similarity(points_px, scale, rotation, translation)
+        transformed[key] = _points_to_normalized(transformed_px, ref_width, ref_height)
+
+    summary = {
+        "mode": mode,
+        "used_points": used_points,
+        "scale": float(scale),
+        "rotation_degrees": float(math.degrees(rotation)),
+        "translation_x": float(translation[0]),
+        "translation_y": float(translation[1]),
+    }
+    return transformed, summary
+
+
+class PoseMetaRetargetAlign:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "参考姿态数据": ("*", {"forceInput": True}),
+                "源姿态数据": ("*", {"forceInput": True}),
+                "置信度阈值": (
+                    "FLOAT",
+                    {
+                        "default": 0.35,
+                        "min": 0.0,
+                        "max": 1.5,
+                        "step": 0.01,
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("*", "STRING")
+    RETURN_NAMES = ("对齐后姿态数据", "调试信息")
+    FUNCTION = "retarget_pose_data"
+    CATEGORY = "姿态/重定向"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, *args, **kwargs):
+        return True
+
+    def retarget_pose_data(self, **kwargs):
+        reference_payload = kwargs["参考姿态数据"]
+        source_payload = kwargs["源姿态数据"]
+        conf_threshold = float(kwargs["置信度阈值"])
+
+        reference_meta_dicts = _extract_pose_meta_dicts(reference_payload)
+        source_meta_dicts = _extract_pose_meta_dicts(source_payload)
+
+        output_payload = copy.deepcopy(source_payload)
+        transformed_meta_dicts = copy.deepcopy(source_meta_dicts)
+        debug_rows = []
+
+        for index, source_meta in enumerate(source_meta_dicts):
+            reference_meta = reference_meta_dicts[0 if len(reference_meta_dicts) == 1 else min(index, len(reference_meta_dicts) - 1)]
+            transformed_meta, summary = _retarget_pose_meta_dict(reference_meta, source_meta, conf_threshold)
+            transformed_meta_dicts[index] = transformed_meta
+            debug_rows.append(
+                f"pose[{index}] 模式={summary['mode']} 使用点数={summary['used_points']} "
+                f"缩放={summary['scale']:.4f} 旋转={summary['rotation_degrees']:.2f}° "
+                f"平移=({summary['translation_x']:.2f}, {summary['translation_y']:.2f})"
+            )
+
+        output_payload["pose_metas_original"] = transformed_meta_dicts
+        _patch_pose_meta_objects(output_payload, transformed_meta_dicts)
+
+        if isinstance(output_payload.get("refer_pose_meta"), dict) and reference_meta_dicts:
+            output_payload["refer_pose_meta"] = copy.deepcopy(reference_meta_dicts[0])
+
+        debug_text = "\n".join(debug_rows) if debug_rows else "未处理到任何姿态数据。"
+        return output_payload, debug_text
+
+
 class PoseRedirectAlignByHead:
     @classmethod
     def INPUT_TYPES(cls):
@@ -288,8 +545,10 @@ class PoseRedirectAlignByHead:
 
 NODE_CLASS_MAPPINGS = {
     "PoseRedirectAlignByHead": PoseRedirectAlignByHead,
+    "PoseMetaRetargetAlign": PoseMetaRetargetAlign,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PoseRedirectAlignByHead": "\u59ff\u6001\u91cd\u5b9a\u5411\u5bf9\u9f50",
+    "PoseMetaRetargetAlign": "姿态数据重定向对齐",
 }
