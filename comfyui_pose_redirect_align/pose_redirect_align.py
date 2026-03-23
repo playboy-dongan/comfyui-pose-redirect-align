@@ -323,15 +323,56 @@ def _patch_pose_meta_objects(payload: dict, transformed_meta_dicts: List[Dict]) 
     if not isinstance(objects, list):
         return
 
+    rebuilt_objects = []
     for index, meta in enumerate(transformed_meta_dicts):
-        if index >= len(objects):
-            break
-        obj = objects[index]
-        if obj is None:
-            continue
-        for key in ("width", "height", "keypoints_body", "keypoints_left_hand", "keypoints_right_hand", "keypoints_face"):
-            if hasattr(obj, key) and key in meta:
-                setattr(obj, key, meta[key])
+        template_obj = objects[index] if index < len(objects) else None
+        rebuilt_objects.append(_meta_dict_to_pose_meta_object(meta, template_obj))
+    payload["pose_metas"] = rebuilt_objects
+
+
+def _meta_dict_to_pose_meta_object(meta: Dict, template_obj=None):
+    cls = template_obj.__class__ if template_obj is not None else None
+
+    if cls is not None and hasattr(cls, "from_humanapi_meta"):
+        try:
+            return cls.from_humanapi_meta(meta)
+        except Exception:
+            pass
+
+    obj = copy.deepcopy(template_obj) if template_obj is not None else None
+    if obj is None and cls is not None:
+        try:
+            obj = cls()
+        except Exception:
+            obj = None
+    if obj is None:
+        return meta
+
+    width = float(meta["width"])
+    height = float(meta["height"])
+
+    obj.width = int(round(width))
+    obj.height = int(round(height))
+
+    body = _ensure_array(meta.get("keypoints_body"))
+    left_hand = _ensure_array(meta.get("keypoints_left_hand"))
+    right_hand = _ensure_array(meta.get("keypoints_right_hand"))
+    face = _ensure_array(meta.get("keypoints_face"))
+
+    if body is not None:
+        obj.kps_body = body[:, :2] * np.array([[width, height]], dtype=np.float32)
+        obj.kps_body_p = body[:, 2].astype(np.float32)
+    if left_hand is not None:
+        obj.kps_lhand = left_hand[:, :2] * np.array([[width, height]], dtype=np.float32)
+        obj.kps_lhand_p = left_hand[:, 2].astype(np.float32)
+    if right_hand is not None:
+        obj.kps_rhand = right_hand[:, :2] * np.array([[width, height]], dtype=np.float32)
+        obj.kps_rhand_p = right_hand[:, 2].astype(np.float32)
+    if face is not None:
+        obj.kps_face = face[:, :2] * np.array([[width, height]], dtype=np.float32)
+        obj.kps_face_p = face[:, 2].astype(np.float32)
+
+    return obj
 
 
 def _retarget_pose_meta_dict(
@@ -423,8 +464,13 @@ class PoseMetaRetargetAlign:
         output_payload["pose_metas_original"] = transformed_meta_dicts
         _patch_pose_meta_objects(output_payload, transformed_meta_dicts)
 
-        if isinstance(output_payload.get("refer_pose_meta"), dict) and reference_meta_dicts:
-            output_payload["refer_pose_meta"] = copy.deepcopy(reference_meta_dicts[0])
+        if reference_meta_dicts:
+            refer_template = output_payload.get("refer_pose_meta")
+            if refer_template is None:
+                refer_pose_metas = reference_payload.get("pose_metas")
+                if isinstance(refer_pose_metas, list) and refer_pose_metas:
+                    refer_template = refer_pose_metas[0]
+            output_payload["refer_pose_meta"] = _meta_dict_to_pose_meta_object(reference_meta_dicts[0], refer_template)
 
         debug_text = "\n".join(debug_rows) if debug_rows else "未处理到任何姿态数据。"
         return output_payload, debug_text
